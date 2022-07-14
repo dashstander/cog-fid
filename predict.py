@@ -25,7 +25,7 @@ def make_image(prompt, model_name, api_token, seed):
 class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
-        self.model = build_feature_extractor('clean').to('cuda0')
+        self.model = build_feature_extractor('clean')
         self.ref_mu, self.ref_cov = get_reference_statistics('cifar10', 32)
         resize_fn =  make_resizer('PIL', False, 'bicubic', (32, 32))
         self.image_fn = Compose([np.asarray, resize_fn, ToTensor()])
