@@ -1,25 +1,44 @@
 # Prediction interface for Cog ⚙️
 # https://github.com/replicate/cog/blob/main/docs/python.md
 
-from cog import BasePredictor, Input, Path
+from cog import BasePredictor, BaseModel, Input, Path
 
 from cleanfid.features import build_feature_extractor, get_reference_statistics
 from cleanfid.resize import make_resizer
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
+import PIL
 from replicate.client import Client
 import requests
 from scipy.stats import multivariate_normal
 from torchvision.transforms import ToTensor, Compose
-
+import tempfile
+from typing import List, Tuple
 
 
 
 def make_image(prompt, model_name, api_token, seed):
     model = Client(api_token).models.get(model_name)
     image_url = list(model.predict(prompt=prompt, seed=seed))[-1]
-    return Image.open(requests.get(image_url, stream=True).raw)
+    return model_name, Image.open(requests.get(image_url, stream=True).raw)
+
+
+def make_output(pairs: List[Tuple[str, float, PIL.Image]]) -> Path:
+    rows = len(pairs)
+    columns = 1
+    fig = plt.figure(figsize=(10, 7))
+    for i, (model, nll, image) in enumerate(pairs):
+        info = f'{model}, negative log-likelihood: {nll:.3f}'
+        fig.add_subplot(rows, columns, i+1)
+        plt.imshow(image)
+        plt.axis('off')
+        plt.title(info)
+    output_path = Path(tempfile.mkdtemp()) / "images.png"
+    fig.savefig(output_path)
+    return output_path
+
 
 
 class Predictor(BasePredictor):
@@ -52,13 +71,14 @@ class Predictor(BasePredictor):
                     executor.submit(make_image, *args)
                 )
         outs = []
-        for image in as_completed(futures):
+        for fut in as_completed(futures):
+            model_name, image = fut.result()
             features = self.get_fid_features(image)
             likelihood = multivariate_normal.logpdf(features, self.ref_mu, self.ref_cov)
             outs.append(
-                (-1. * np.log(likelihood), image)
+                (model_name, -1. * np.log(likelihood), image)
             )
-        return outs
+        return make_output(outs)
 
 
 
