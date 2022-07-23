@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
-import PIL
 from replicate.client import Client
 import requests
 from scipy.stats import multivariate_normal
@@ -21,11 +20,13 @@ from typing import List, Tuple
 
 def make_image(prompt, model_name, api_token, seed):
     model = Client(api_token).models.get(model_name)
-    image_url = list(model.predict(prompt=prompt, seed=seed))[-1]
-    return model_name, Image.open(requests.get(image_url, stream=True).raw)
+    urls = [url[0] for url in model.predict(prompt=prompt, seed=seed)]
+    response = requests.get(urls[-1], stream=True, timeout=10)
+    response.raise_for_status()
+    return model_name, Image.open(response.raw)
 
 
-def make_output(pairs: List[Tuple[str, float, PIL.Image]]) -> Path:
+def make_output(pairs: List[Tuple[str, float, Image.Image]]) -> Path:
     rows = len(pairs)
     columns = 1
     fig = plt.figure(figsize=(10, 7))
@@ -46,12 +47,13 @@ class Predictor(BasePredictor):
         """Load the model into memory to make running multiple predictions efficient"""
         self.model = build_feature_extractor('clean')
         self.ref_mu, self.ref_cov = get_reference_statistics('cifar10', 32)
-        resize_fn =  make_resizer('PIL', False, 'bicubic', (32, 32))
+        resize_fn =  make_resizer('PIL', False, 'bicubic', (299, 299))
         self.image_fn = Compose([np.asarray, resize_fn, ToTensor()])
 
     def get_fid_features(self, image):
+        image_tensor = self.image_fn(image)[None]
         return self.model(
-            self.image_fn(image).to('cuda:0')
+            image_tensor.to('cuda:0')
         )
 
     def predict(
@@ -63,6 +65,7 @@ class Predictor(BasePredictor):
     ) -> Path:
         """Run a single prediction on the model"""
         urls = [url.strip() for url in model_urls.split('||')]
+        print(urls)
         futures = []
         with ThreadPoolExecutor(max_workers=5) as executor:
             for url in urls:
@@ -74,13 +77,8 @@ class Predictor(BasePredictor):
         for fut in as_completed(futures):
             model_name, image = fut.result()
             features = self.get_fid_features(image)
-            likelihood = multivariate_normal.logpdf(features, self.ref_mu, self.ref_cov)
+            likelihood = multivariate_normal.logpdf(features.cpu(), self.ref_mu, self.ref_cov)
             outs.append(
-                (model_name, -1. * np.log(likelihood), image)
+                (model_name, -1. * likelihood, image)
             )
         return make_output(outs)
-
-
-
-
-        
